@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>JSON Module</title>
+<meta charset="utf-8">
+<meta name="Copyright" content="Copyright (C) 2005-2026">
+<meta name="Language" content="en">
+<link rel="stylesheet" type="text/css" href="bluequad.css" media="screen">
+<link rel="stylesheet" type="text/css" href="bluequad-print.css" media="print">
+</head>
+<body>
+<div id="site">
+<a href="https://luajit.org"><span>Lua<span id="logo">JIT</span></span></a>
+</div>
+<div id="head">
+<h1>JSON Module</h1>
+</div>
+<div id="nav">
+<ul><li>
+<a href="luajit.html">LuaJIT</a>
+<ul><li>
+<a href="https://luajit.org/download.html">Download <span class="ext">&raquo;</span></a>
+</li><li>
+<a href="install.html">Installation</a>
+</li><li>
+<a href="running.html">Running</a>
+</li></ul>
+</li><li>
+<a href="extensions.html">Extensions</a>
+<ul><li>
+<a href="ext_ffi.html">FFI Library</a>
+<ul><li>
+<a href="ext_ffi_tutorial.html">FFI Tutorial</a>
+</li><li>
+<a href="ext_ffi_api.html">ffi.* API</a>
+</li><li>
+<a href="ext_ffi_semantics.html">FFI Semantics</a>
+</li></ul>
+</li><li>
+<a href="ext_buffer.html">String Buffers</a>
+</li><li>
+<a class="current" href="ext_json.html">JSON Module</a>
+</li><li>
+<a href="ext_jit.html">jit.* Library</a>
+</li><li>
+<a href="ext_c_api.html">Lua/C API</a>
+</li><li>
+<a href="ext_profiler.html">Profiler</a>
+</li></ul>
+</li><li>
+<a href="https://luajit.org/status.html">Status <span class="ext">&raquo;</span></a>
+</li><li>
+<a href="https://luajit.org/faq.html">FAQ <span class="ext">&raquo;</span></a>
+</li><li>
+<a href="https://luajit.org/list.html">Mailing List <span class="ext">&raquo;</span></a>
+</li></ul>
+</div>
+<div id="main">
+<p>
+The JSON module is an extension of the <a href="ext_buffer.html">String Buffer Library</a>,
+adding functionality to encode and decode between JSON format and Lua objects. The JSON encoder
+generates minified JSON (without whitespace). The JSON parser is <b>non-validating</b> and also
+parses JSON with comments and the <a href="https://github.com/Autodesk/sjson" target="_blank">SJSON format</a>.
+
+The JSON module is compiled-in by default, but you can disable it by setting <tt>-DLUAJIT_DISABLE_JSON</tt>
+at compilation time.
+</p>
+
+<h3 id="serialize_methods">Serialization Functions and Methods</h3>
+
+<h3 id="buffer_jsonencode"><tt>str = buffer.jsonencode(obj)<br>
+buf = buf:jsonencode(obj)</tt></h3>
+<p>
+Serializes (encodes) the Lua object <tt>obj</tt> to JSON. The stand-alone
+function returns a string <tt>str</tt>. The buffer method appends the
+JSON encoding to the buffer.
+</p>
+<p>
+<tt>obj</tt> can be any of the supported Lua types &mdash; it doesn't
+need to be a Lua table.
+</p>
+<p>
+This function may throw an error when attempting to serialize circular
+references or deeply nested tables.
+</p>
+<p>
+Attempting to deserialize an FFI or another unexpected type will result
+in the `null` value.
+</p>
+
+<h3 id="buffer_jsondecode"><tt>obj = buffer.jsondecode(str)<br>
+obj = buf:jsondecode()</tt></h3>
+<p>
+The stand-alone function deserializes (decodes) the JSON string
+<tt>str</tt>, the buffer method deserializes one JSON object from the
+buffer. Both return a Lua object <tt>obj</tt>.
+</p>
+<p>
+The returned object may be any of the supported Lua types &mdash;
+even <tt>nil</tt>.
+</p>
+<p>
+This function may throw an error when fed with malformed or incomplete
+encoded data. The stand-alone function throws when there's left-over
+data after decoding a single top-level object. The buffer method leaves
+any left-over data in the buffer.
+</p>
+
+<br class="flush">
+</div>
+<div id="foot">
+<hr class="hide">
+Copyright &copy; 2005-2026
+<span class="noprint">
+&middot;
+<a href="contact.html">Contact</a>
+</span>
+</div>
+</body>
+</html>

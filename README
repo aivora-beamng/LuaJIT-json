@@ -1,3 +1,17 @@
+README for the LuaJIT JSON module
+---------------------------------
+
+This is a fork of LuaJIT 2.1 adding an integrated JSON module.
+
+Documentation for the LuaJIT JSON module is available in HTML format.
+
+ doc/ext_json.html
+
+You can also browse the online version hosted at
+https://ivora.cz/luajit/doc/ext_json.html.
+
+---
+
 README for LuaJIT 2.1
 ---------------------
 
@@ -13,4 +27,3 @@ Documentation for LuaJIT is available in HTML format.
 Please point your favorite browser to:
 
  doc/luajit.html
-
