@@ -194,6 +194,20 @@ ERRDEF(BUFFER_EOB,	"unexpected end of buffer")
 ERRDEF(BUFFER_LEFTOV,	"left-over data in buffer")
 #endif
 
+#if LJ_HASJSON
+#define BADJSON_HEADER "JSON error (line %d, col %d): " LUA_QS " - "
+
+ERRDEF(BADJSON_NESTEDCOMM,	BADJSON_HEADER "'/*' inside another '/*' comment is not permitted")
+ERRDEF(BADJSON_INVALIDCOMM,	BADJSON_HEADER "Invalid comment")
+ERRDEF(BADJSON_ENCODINGNUM,	BADJSON_HEADER "Error encoding number: " LUA_QL("%f"))
+ERRDEF(BADJSON_INVALIDVAL,	BADJSON_HEADER "Error reading value: " LUA_QS)
+ERRDEF(BADJSON_INVALIDNUM,	BADJSON_HEADER "Invalid number")
+ERRDEF(BADJSON_MISSINGEND,	BADJSON_HEADER "String not having an end-quote")
+ERRDEF(BADJSON_MISSINGDICTKEY,	BADJSON_HEADER "Expected dictionary key")
+ERRDEF(BADJSON_MISSINGTABEND,	BADJSON_HEADER "Expected end character: '%c'")
+ERRDEF(BADJSON_INVALIDSEP,	BADJSON_HEADER "Expected dictionary separator ':' or '=' instead of: '%c'")
+#endif
+
 #undef ERRDEF
 
 /* Detecting unused error messages:

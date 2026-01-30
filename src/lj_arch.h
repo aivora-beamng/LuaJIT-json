@@ -628,6 +628,13 @@
 #define LJ_HASBUFFER		1
 #endif
 
+/* Disable or enable the JSON extension. */
+#if defined(LUAJIT_DISABLE_JSON)
+#define LJ_HASJSON		0
+#else
+#define LJ_HASJSON		1
+#endif
+
 #if defined(LUAJIT_DISABLE_PROFILE)
 #define LJ_HASPROFILE		0
 #elif LJ_TARGET_POSIX

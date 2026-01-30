@@ -29,6 +29,8 @@
 #include "lj_serialize.h"
 #include "lj_lib.h"
 
+#include "lj_serialize_json.h"
+
 /* -- Helper functions ---------------------------------------------------- */
 
 /* Check that the first argument is a string buffer. */
@@ -277,6 +279,27 @@ LJLIB_CF(buffer_method___len)		LJLIB_REC(.)
   return 1;
 }
 
+#if LJ_HASJSON
+LJLIB_CF(buffer_method_jsonencode) // no recording for now
+{
+  SBufExt *sbx = buffer_tobufw(L);
+  cTValue *o = lj_lib_checkany(L, 2);
+  lj_serialize_json_put(sbx, o);
+  lj_gc_check(L);
+  L->top = L->base+1;  /* Chain buffer object. */
+  return 1;
+}
+
+LJLIB_CF(buffer_method_jsondecode) // no recording for now
+{
+  SBufExt *sbx = buffer_tobufw(L);
+  setnilV(L->top++);
+  sbx->r = lj_serialize_json_get(sbx, L->top-1);
+  lj_gc_check(L);
+  return 1;
+}
+#endif
+
 LJLIB_PUSH("buffer") LJLIB_SET(__metatable)
 LJLIB_PUSH(top-1) LJLIB_SET(__index)
 
@@ -343,6 +366,25 @@ LJLIB_CF(buffer_decode)			LJLIB_REC(.)
   lj_gc_check(L);
   return 1;
 }
+
+#if LJ_HASJSON
+LJLIB_CF(buffer_jsonencode)
+{
+  cTValue *o = lj_lib_checkany(L, 1);
+  setstrV(L, L->top++, lj_serialize_json_encode(L, o));
+  lj_gc_check(L);
+  return 1;
+}
+
+LJLIB_CF(buffer_jsondecode)
+{
+  GCstr *str = lj_lib_checkstrx(L, 1);
+  setnilV(L->top++);
+  lj_serialize_json_decode(L, L->top-1, str);
+  lj_gc_check(L);
+  return 1;
+}
+#endif
 
 /* ------------------------------------------------------------------------ */
 

@@ -303,7 +303,11 @@ static int nd_similar(uint32_t* nd, uint32_t ndhi, uint32_t* ref, MSize hilen,
 /* -- Formatted conversions to buffer ------------------------------------- */
 
 /* Write formatted floating-point number to either sb or p. */
+#if LJ_HASJSON
+char *lj_strfmt_wfnum(SBuf *sb, SFormat sf, lua_Number n, char *p)
+#else
 static char *lj_strfmt_wfnum(SBuf *sb, SFormat sf, lua_Number n, char *p)
+#endif
 {
   MSize width = STRFMT_WIDTH(sf), prec = STRFMT_PREC(sf), len;
   TValue t;
