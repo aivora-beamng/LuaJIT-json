@@ -84,6 +84,7 @@
 
 static LJ_JSON_AINLINE char *lj_json_serialize_more(char *w, SBufExt *sbx, MSize sz) {
   if (LJ_JSON_UNLIKELY(sz > (MSize)(sbx->e - w))) {
+    sbx->w = w;
     w = lj_buf_more2((SBuf *)sbx, sz);
   }
   return w;
