@@ -302,59 +302,58 @@ static char *lj_json_serialize_put(char *w, SBufExt *sbx, cTValue *o) {
 
 // JSON decoding START
 
-static TValue *lj_json_scratch = NULL;
-static uint32_t lj_json_scratch_count = 0;
-static uint32_t lj_json_scratch_capacity = 0;
+typedef struct TValueScratch {
+  TValue *data;
+  uint32_t count;
+  uint32_t capacity;
+} TValueScratch;
 
 #define LJ_JSON_MAX_SCRATCH INT_MAX-2
 
-static void lj_json_scratch_init(lua_State *L) {
-  lj_json_scratch = lj_mem_newvec(L, LJ_JSON_SCRATCH_INITIAL_CAPACITY, TValue);
-  lj_json_scratch_capacity = LJ_JSON_SCRATCH_INITIAL_CAPACITY;
+static void lj_json_scratch_init(lua_State *L, TValueScratch *scr) {
+  scr->data = lj_mem_newvec(L, LJ_JSON_SCRATCH_INITIAL_CAPACITY, TValue);
+  scr->capacity = LJ_JSON_SCRATCH_INITIAL_CAPACITY;
+  scr->count = 0;
 }
 
-static void lj_json_scratch_free(lua_State* L) {
-  if (!lj_json_scratch) {
+static void lj_json_scratch_free(lua_State *L, TValueScratch *scr) {
+  if (!scr->data) {
     return;
   }
-  lj_mem_freevec(G(L), lj_json_scratch, lj_json_scratch_capacity, TValue);
-  lj_json_scratch = NULL;
-  lj_json_scratch_count = 0;
-  lj_json_scratch_capacity = 0;
+  lj_mem_freevec(G(L), scr->data, scr->capacity, TValue);
+  scr->data = NULL;
+  scr->count = 0;
+  scr->capacity = 0;
 }
 
-static void lj_json_scratch_reset() {
-  lj_json_scratch_count = 0;
-}
-
-#define scratchV(i) (lj_json_scratch[i])
+#define scratchV(i) (scr->data[i])
 
 // allocate space for n TValues and return index of the first one on the scratch buffer
-static LJ_JSON_AINLINE uint32_t lj_json_scratch_pushn(lua_State *L, uint32_t n) {
-  if (LJ_UNLIKELY(lj_json_scratch_capacity == 0)) {
-    lj_json_scratch_init(L);
-  } else if (LJ_UNLIKELY(lj_json_scratch_count + n >= lj_json_scratch_capacity)) {
-    if (LJ_UNLIKELY(lj_json_scratch_capacity == LJ_JSON_MAX_SCRATCH)) {
+static LJ_JSON_AINLINE uint32_t lj_json_scratch_pushn(lua_State *L, TValueScratch *scr, uint32_t n) {
+  if (LJ_UNLIKELY(scr->count + n >= scr->capacity)) {
+    if (LJ_UNLIKELY(scr->capacity == LJ_JSON_MAX_SCRATCH)) {
+      lj_json_scratch_free(L, scr);
       lj_err_caller(L, LJ_ERR_ERRMEM);
     }
-    lj_mem_growvec(L, lj_json_scratch, lj_json_scratch_capacity, LJ_JSON_MAX_SCRATCH, TValue);
+    lj_mem_growvec(L, scr->data, scr->capacity, LJ_JSON_MAX_SCRATCH, TValue);
   }
-  uint32_t scr = lj_json_scratch_count;
-  lj_json_scratch_count += n;
-  return scr;
+  uint32_t scri = scr->count;
+  scr->count += n;
+  return scri;
 }
 
 // "remove" n TValues on the stack and return index of the first one
-static LJ_JSON_AINLINE uint32_t lj_json_scratch_popn(lua_State *L, uint32_t n) {
-  if (LJ_UNLIKELY(n > lj_json_scratch_count)) {
+static LJ_JSON_AINLINE uint32_t lj_json_scratch_popn(lua_State *L, TValueScratch *scr, uint32_t n) {
+  if (LJ_UNLIKELY(n > scr->count)) {
+    lj_json_scratch_free(L, scr);
     lj_err_caller(L, LJ_ERR_ERRMEM);
   }
-  lj_json_scratch_count -= n;
-  return lj_json_scratch_count;
+  scr->count -= n;
+  return scr->count;
 }
 
-static const char *lj_err_json_geterror(SBufExt *sbx, char *r, int *line, int *col) {
-  lj_json_scratch_free(sbufL(sbx));
+static const char *lj_err_json_geterror(SBufExt *sbx, TValueScratch *scr, char *r, int *line, int *col) {
+  if (scr) lj_json_scratch_free(sbufL(sbx), scr);
   static char tmp_err_buffer[128] = {0};
   char *curnewline = sbx->r;
   *line = 1;
@@ -384,15 +383,15 @@ static const char *lj_err_json_geterror(SBufExt *sbx, char *r, int *line, int *c
   return tmp_err_buffer;
 }
 
-#define lj_err_json(sbx, em) do {                                          \
+#define lj_err_json(em) do {                                               \
   int line, col;                                                           \
-  const char *msg = lj_err_json_geterror(sbx, r, &line, &col);             \
+  const char *msg = lj_err_json_geterror(sbx, scr, r, &line, &col);        \
   lj_err_callerv((sbufL(sbx)), em, line, col, msg);                        \
 } while (0);
 
-#define lj_err_jsonv(sbx, em, ...) do {                                    \
+#define lj_err_jsonv(em, ...) do {                                         \
   int line, col;                                                           \
-  const char *msg = lj_err_json_geterror(sbx, r, &line, &col);             \
+  const char *msg = lj_err_json_geterror(sbx, scr, r, &line, &col);        \
   lj_err_callerv((sbufL(sbx)), em, line, col, msg, __VA_ARGS__);           \
 } while (0);
 
@@ -487,8 +486,7 @@ static LJ_JSON_AINLINE char *lj_json_skip_to_string_end_simd(char *p, SBufExt *s
     const uint8x16_t s = vld1q_u8((const uint8_t *)(p));
     uint8x16_t x = vceqq_u8(s, w0);
     x = vorrq_u8(x, vceqq_u8(s, w1));
-    //x = vmvnq_u8(x);                       // Negate
-    x = vrev64q_u8(x);                     // Rev in 64
+    x = vrev64q_u8(x); // rev in 64
     uint64_t low = vgetq_lane_u64(vreinterpretq_u64_u8(x), 0);   // extract
     uint64_t high = vgetq_lane_u64(vreinterpretq_u64_u8(x), 1);  // extract
     if (low == 0) {
@@ -688,7 +686,7 @@ static LJ_JSON_AINLINE char *lj_json_skip_white_space_simd(char *p, SBufExt *sbx
 #endif // LJ_JSON_USE_SSE2
 #endif // LJ_JSON_USE_INTRINSICS
 
-static LJ_JSON_AINLINE char *lj_json_skip_comment_space(char *r, SBufExt *sbx) {
+static LJ_JSON_AINLINE char *lj_json_skip_comment_space(char *r, SBufExt *sbx, TValueScratch *scr) {
   if (LJ_JSON_UNLIKELY(r >= sbx->w)) {
     return r;
   }
@@ -713,7 +711,7 @@ static LJ_JSON_AINLINE char *lj_json_skip_comment_space(char *r, SBufExt *sbx) {
   }
   case '*': { // * -- block comment "/*  xxxxxxx */"
     if (LJ_JSON_UNLIKELY(r >= sbx->w)) {
-      lj_err_json(sbx, LJ_ERR_BADJSON_INVALIDCOMM);
+      lj_err_json(LJ_ERR_BADJSON_INVALIDCOMM);
     }
     while (LJ_JSON_LIKELY(r < sbx->w)) {
 #if LJ_JSON_USE_INTRINSICS
@@ -728,7 +726,7 @@ static LJ_JSON_AINLINE char *lj_json_skip_comment_space(char *r, SBufExt *sbx) {
       }
       r++;
       if (LJ_JSON_UNLIKELY(r >= sbx->w)) {
-        lj_err_json(sbx, LJ_ERR_BADJSON_INVALIDCOMM);
+        lj_err_json(LJ_ERR_BADJSON_INVALIDCOMM);
       }
       if (*r == '/') {
         r++;
@@ -736,18 +734,18 @@ static LJ_JSON_AINLINE char *lj_json_skip_comment_space(char *r, SBufExt *sbx) {
       }
       if (r[-2] == '/') {
         r -= 2;
-        lj_err_json(sbx, LJ_ERR_BADJSON_NESTEDCOMM);
+        lj_err_json(LJ_ERR_BADJSON_NESTEDCOMM);
       }
     }
-    lj_err_json(sbx, LJ_ERR_BADJSON_INVALIDCOMM);
+    lj_err_json(LJ_ERR_BADJSON_INVALIDCOMM);
   }
   default:
-    lj_err_json(sbx, LJ_ERR_BADJSON_INVALIDCOMM);
+    lj_err_json(LJ_ERR_BADJSON_INVALIDCOMM);
   }
   return r;
 }
 
-static LJ_JSON_AINLINE char *lj_json_skip_white_space(char *r, SBufExt *sbx) {
+static LJ_JSON_AINLINE char *lj_json_skip_white_space(char *r, SBufExt *sbx, TValueScratch *scr) {
 #if LJ_JSON_USE_INTRINSICS
   r = lj_json_skip_white_space_simd(r, sbx);
 #else
@@ -755,7 +753,7 @@ static LJ_JSON_AINLINE char *lj_json_skip_white_space(char *r, SBufExt *sbx) {
 #endif
   while (LJ_JSON_LIKELY(r < sbx->w) && *r == '/') {
     r++;
-    r = lj_json_skip_comment_space(r, sbx); // / -- read comment
+    r = lj_json_skip_comment_space(r, sbx, scr); // / -- read comment
 #if LJ_JSON_USE_INTRINSICS
   r = lj_json_skip_white_space_simd(r, sbx);
 #else
@@ -765,7 +763,7 @@ static LJ_JSON_AINLINE char *lj_json_skip_white_space(char *r, SBufExt *sbx) {
   return r;
 }
 
-static char *lj_json_read_number(char *r, SBufExt *sbx, TValue *o) {
+static char *lj_json_read_number(char *r, SBufExt *sbx, TValueScratch *scr, TValue *o) {
   char *rbegin = r;
 
   TValue tmp;
@@ -803,7 +801,7 @@ static char *lj_json_read_number(char *r, SBufExt *sbx, TValue *o) {
         return rbegin + sizeof(val);
       }
       r = rbegin;
-      lj_err_json(sbx, LJ_ERR_BADJSON_INVALIDNUM);
+      lj_err_json(LJ_ERR_BADJSON_INVALIDNUM);
       return NULL;
     }
     case 'e':
@@ -818,7 +816,7 @@ static char *lj_json_read_number(char *r, SBufExt *sbx, TValue *o) {
       *r = back;
       if (fmt == STRSCAN_ERROR) {
         r = rbegin;
-        lj_err_json(sbx, LJ_ERR_BADJSON_INVALIDNUM);
+        lj_err_json(LJ_ERR_BADJSON_INVALIDNUM);
         return NULL;
       }
       break;
@@ -829,7 +827,7 @@ static char *lj_json_read_number(char *r, SBufExt *sbx, TValue *o) {
     }
   }
   if (rbegin == r) {
-    lj_err_json(sbx, LJ_ERR_BADJSON_INVALIDNUM);
+    lj_err_json(LJ_ERR_BADJSON_INVALIDNUM);
   }
   o->u64 = tmp.u64;
   return r;
@@ -892,7 +890,7 @@ static char *lj_json_read_escaped_string(char *r, char *rbegin, char *escape, SB
   return r + 1;
 }
 
-static LJ_JSON_AINLINE char *lj_json_read_string(char *r, SBufExt *sbx, GCstr **str) {
+static LJ_JSON_AINLINE char *lj_json_read_string(char *r, SBufExt *sbx, TValueScratch *scr, GCstr **str) {
   char *rbegin = r;
   char *escape = NULL;
 #if LJ_JSON_USE_INTRINSICS
@@ -920,7 +918,7 @@ static LJ_JSON_AINLINE char *lj_json_read_string(char *r, SBufExt *sbx, GCstr **
   }
 
   if (LJ_JSON_UNLIKELY(r >= sbx->w)) {
-    lj_err_json(sbx, LJ_ERR_BADJSON_MISSINGEND);
+    lj_err_json(LJ_ERR_BADJSON_MISSINGEND);
   }
 
   if (LJ_JSON_LIKELY(!escape)) {
@@ -931,45 +929,45 @@ static LJ_JSON_AINLINE char *lj_json_read_string(char *r, SBufExt *sbx, GCstr **
   return lj_json_read_escaped_string(r, rbegin, escape, sbx, str);
 }
 
-static LJ_JSON_AINLINE char *lj_json_read_key(char *r, SBufExt *sbx, uint32_t scr) {
+static LJ_JSON_AINLINE char *lj_json_read_key(char *r, SBufExt *sbx, TValueScratch *scr, uint32_t scri) {
   if (LJ_JSON_LIKELY(r < sbx->w) && *r == '"') {
     GCstr* str;
-    r = lj_json_read_string(r + 1, sbx, &str);
-    scratchV(scr).u64 = (uintptr_t)str;
+    r = lj_json_read_string(r + 1, sbx, scr, &str);
+    scratchV(scri).u64 = (uintptr_t)str;
   } else {
     char *rbegin = r;
     while (LJ_JSON_LIKELY(r < sbx->w) && isjsonkey(*r)) {
       r++;
     }
     if (r == rbegin) {
-      lj_err_json(sbx, LJ_ERR_BADJSON_MISSINGDICTKEY);
+      lj_err_json(LJ_ERR_BADJSON_MISSINGDICTKEY);
       return NULL;
     }
 
     GCstr* str = lj_str_new(sbufL(sbx), rbegin, r - rbegin);
-    scratchV(scr).u64 = (uintptr_t)str;
+    scratchV(scri).u64 = (uintptr_t)str;
   }
 
-  r = lj_json_skip_white_space(r, sbx);
+  r = lj_json_skip_white_space(r, sbx, scr);
   if (LJ_JSON_UNLIKELY(r >= sbx->w || (*r != ':' && *r != '='))) {
-    lj_err_jsonv(sbx, LJ_ERR_BADJSON_INVALIDSEP, *r);
+    lj_err_jsonv(LJ_ERR_BADJSON_INVALIDSEP, *r);
     return NULL;
   }
 
   return r + 1;
 }
 
-static LJ_JSON_AINLINE char *lj_json_read_nan(char *r, SBufExt *sbx, TValue *o) {
+static LJ_JSON_AINLINE char *lj_json_read_nan(char *r, SBufExt *sbx, TValueScratch *scr, TValue *o) {
   if (LJ_JSON_UNLIKELY(r + 3 > sbx->w || r[1] != 'a' || r[2] != 'N')) {
-    lj_err_jsonv(sbx, LJ_ERR_BADJSON_INVALIDVAL, "NaN");
+    lj_err_jsonv(LJ_ERR_BADJSON_INVALIDVAL, "NaN");
   }
   setnanV(o);
   return r + 3;
 }
 
-static LJ_JSON_AINLINE char *lj_json_read_infinity(char *r, SBufExt *sbx, char neg, TValue *o) {
+static LJ_JSON_AINLINE char *lj_json_read_infinity(char *r, SBufExt *sbx, TValueScratch *scr, char neg, TValue *o) {
   if (LJ_JSON_UNLIKELY(r + 8 > sbx->w || r[1] != 'n' || r[2] != 'f' || r[3] != 'i' || r[4] != 'n' || r[5] != 'i' || r[6] != 't' || r[7] != 'y')) {
-    lj_err_jsonv(sbx, LJ_ERR_BADJSON_INVALIDVAL, "Infinity");
+    lj_err_jsonv(LJ_ERR_BADJSON_INVALIDVAL, "Infinity");
   }
   if (neg) {
     setminfV(o);
@@ -979,69 +977,69 @@ static LJ_JSON_AINLINE char *lj_json_read_infinity(char *r, SBufExt *sbx, char n
   return r + 8;
 }
 
-static LJ_JSON_AINLINE char *lj_json_read_true(char *r, SBufExt *sbx, TValue *o) {
+static LJ_JSON_AINLINE char *lj_json_read_true(char *r, SBufExt *sbx, TValueScratch *scr, TValue *o) {
   if (LJ_JSON_UNLIKELY(r + 4 > sbx->w || r[1] != 'r' || r[2] != 'u' || r[3] != 'e')) {
-    lj_err_jsonv(sbx, LJ_ERR_BADJSON_INVALIDVAL, "true");
+    lj_err_jsonv(LJ_ERR_BADJSON_INVALIDVAL, "true");
   }
   setboolV(o, 1);
   return r + 4;
 }
 
-static LJ_JSON_AINLINE char *lj_json_read_false(char *r, SBufExt *sbx, TValue *o) {
+static LJ_JSON_AINLINE char *lj_json_read_false(char *r, SBufExt *sbx, TValueScratch *scr, TValue *o) {
   if (LJ_JSON_UNLIKELY(r + 5 > sbx->w || r[1] != 'a' || r[2] != 'l' || r[3] != 's' || r[4] != 'e')) {
-    lj_err_jsonv(sbx, LJ_ERR_BADJSON_INVALIDVAL, "false");
+    lj_err_jsonv(LJ_ERR_BADJSON_INVALIDVAL, "false");
   }
   setboolV(o, 0);
   return r + 5;
 }
 
-static LJ_JSON_AINLINE char *lj_json_read_null(char *r, SBufExt *sbx, TValue *o) {
+static LJ_JSON_AINLINE char *lj_json_read_null(char *r, SBufExt *sbx, TValueScratch *scr, TValue *o) {
   if (LJ_JSON_UNLIKELY(r + 4 > sbx->w || r[1] != 'u' || r[2] != 'l' || r[3] != 'l')) {
-    lj_err_jsonv(sbx, LJ_ERR_BADJSON_INVALIDVAL, "null");
+    lj_err_jsonv(LJ_ERR_BADJSON_INVALIDVAL, "null");
   }
   setnilV(o);
   return r + 4;
 }
 
-static LJ_JSON_AINLINE char *lj_json_read_minus(char *r, SBufExt *sbx, TValue *o) {
+static LJ_JSON_AINLINE char *lj_json_read_minus(char *r, SBufExt *sbx, TValueScratch *scr, TValue *o) {
   if (LJ_JSON_UNLIKELY(r >= sbx->w)) {
-    lj_err_json(sbx, LJ_ERR_BADJSON_MISSINGEND);
+    lj_err_json(LJ_ERR_BADJSON_MISSINGEND);
   }
   switch (*r) {
   case 'I':
-    return lj_json_read_infinity(r, sbx, 1, o);
+    return lj_json_read_infinity(r, sbx, scr, 1, o);
   case 'N':
-    return lj_json_read_nan(r, sbx, o);
+    return lj_json_read_nan(r, sbx, scr, o);
   default:
     break;
   }
-  r = lj_json_read_number(r, sbx, o);
+  r = lj_json_read_number(r, sbx, scr, o);
   if (tvisnum(o)) {
     o->n = -o->n;
   }
   return r;
 }
 
-static char *lj_json_deserialize_peek(char *r, SBufExt *sbx, uint32_t scr);
+static char *lj_json_deserialize_peek(char *r, SBufExt *sbx, TValueScratch *scr, uint32_t scri);
 
-static LJ_JSON_AINLINE char *lj_json_read_array(char *r, SBufExt *sbx, uint32_t scr) {
-  if (LJ_JSON_UNLIKELY(sbx->depth <= 0)) lj_err_json(sbx, LJ_ERR_BUFFER_DEPTH);
+static LJ_JSON_AINLINE char *lj_json_read_array(char *r, SBufExt *sbx, TValueScratch *scr, uint32_t scri) {
+  if (LJ_JSON_UNLIKELY(sbx->depth <= 0)) lj_err_json(LJ_ERR_BUFFER_DEPTH);
   sbx->depth--;
   GCtab *t = NULL;
   lua_State *L = sbufL(sbx);
   uint32_t asize = 0;
-  r = lj_json_skip_white_space(r, sbx);
+  r = lj_json_skip_white_space(r, sbx, scr);
   while (LJ_JSON_LIKELY(r < sbx->w) && *r != ']') {
-    uint32_t v = lj_json_scratch_pushn(L, 1);
-    r = lj_json_deserialize_peek(r, sbx, v);
-    r = lj_json_skip_white_space(r, sbx);
+    uint32_t v = lj_json_scratch_pushn(L, scr, 1);
+    r = lj_json_deserialize_peek(r, sbx, scr, v);
+    r = lj_json_skip_white_space(r, sbx, scr);
     asize++;
   }
   if (asize == 0) {
     t = lj_tab_new_ah(L, 0, 0);
   } else {
     t = lj_tab_new_ah(L, asize + 1, 0);
-    cTValue *base = &scratchV(lj_json_scratch_popn(L, asize));
+    cTValue *base = &scratchV(lj_json_scratch_popn(L, scr, asize));
     TValue *array = tvref(t->array) + 1;
     if (asize < 64) {  /* An inlined loop beats memcpy for < 512 bytes. */
       for (uint32_t i = 0; i < asize; i++) {
@@ -1051,31 +1049,31 @@ static LJ_JSON_AINLINE char *lj_json_read_array(char *r, SBufExt *sbx, uint32_t 
       memcpy(array, base, asize*sizeof(TValue));
     }
   }
-  settabV(L, &scratchV(scr), t);
+  settabV(L, &scratchV(scri), t);
   return r;
 }
 
-static LJ_JSON_AINLINE char *lj_json_read_object(char *r, SBufExt *sbx, uint32_t scr) {
-  if (sbx->depth <= 0) lj_err_json(sbx, LJ_ERR_BUFFER_DEPTH);
+static LJ_JSON_AINLINE char *lj_json_read_object(char *r, SBufExt *sbx, TValueScratch *scr, uint32_t scri) {
+  if (sbx->depth <= 0) lj_err_json(LJ_ERR_BUFFER_DEPTH);
   sbx->depth--;
   GCtab *t = NULL;
   lua_State *L = sbufL(sbx);
-  r = lj_json_skip_white_space(r, sbx);
+  r = lj_json_skip_white_space(r, sbx, scr);
   uint32_t hsize = 0;
   while (LJ_JSON_LIKELY(r < sbx->w) && *r != '}') {
-    uint32_t next = lj_json_scratch_pushn(L, 2);
-    r = lj_json_read_key(r, sbx, next);
+    uint32_t next = lj_json_scratch_pushn(L, scr, 2);
+    r = lj_json_read_key(r, sbx, scr, next);
     next++;
-    r = lj_json_skip_white_space(r, sbx);
-    r = lj_json_deserialize_peek(r, sbx, next);
-    r = lj_json_skip_white_space(r, sbx);
+    r = lj_json_skip_white_space(r, sbx, scr);
+    r = lj_json_deserialize_peek(r, sbx, scr, next);
+    r = lj_json_skip_white_space(r, sbx, scr);
     hsize++;
   }
   if (hsize == 0) {
     t = lj_tab_new(L, 0, 0);
   } else {
     t = lj_tab_new(L, 0, hsize2hbits(hsize));
-    cTValue *head = &scratchV(lj_json_scratch_popn(L, 2 * hsize));
+    cTValue *head = &scratchV(lj_json_scratch_popn(L, scr, 2 * hsize));
     do {
       const GCstr *key = (const GCstr*)(uintptr_t)(head->u64);
       TValue *v = lj_tab_setstr(L, t, key);
@@ -1084,27 +1082,27 @@ static LJ_JSON_AINLINE char *lj_json_read_object(char *r, SBufExt *sbx, uint32_t
       head++;
     } while (--hsize);
   }
-  settabV(L, &scratchV(scr), t);
+  settabV(L, &scratchV(scri), t);
   return r;
 }
 
-static char *lj_json_deserialize_peek(char *r, SBufExt *sbx, uint32_t scr) {
+static char *lj_json_deserialize_peek(char *r, SBufExt *sbx, TValueScratch *scr, uint32_t scri) {
   if (LJ_JSON_LIKELY(r < sbx->w)) {
     switch (*r) {
     case 'I': {
-      return lj_json_read_infinity(r, sbx, 0, &scratchV(scr));
+      return lj_json_read_infinity(r, sbx, scr, 0, &scratchV(scri));
     }
     case 'N': {
-      return lj_json_read_nan(r, sbx, &scratchV(scr));
+      return lj_json_read_nan(r, sbx, scr, &scratchV(scri));
     }
     case 't': {
-      return lj_json_read_true(r, sbx, &scratchV(scr));
+      return lj_json_read_true(r, sbx, scr, &scratchV(scri));
     }
     case 'f': {
-      return lj_json_read_false(r, sbx, &scratchV(scr));
+      return lj_json_read_false(r, sbx, scr, &scratchV(scri));
     }
     case 'n': {
-      return lj_json_read_null(r, sbx, &scratchV(scr));
+      return lj_json_read_null(r, sbx, scr, &scratchV(scri));
     }
     case '0':
     case '1':
@@ -1116,53 +1114,53 @@ static char *lj_json_deserialize_peek(char *r, SBufExt *sbx, uint32_t scr) {
     case '7':
     case '8':
     case '9': {
-      return lj_json_read_number(r, sbx, &scratchV(scr));
+      return lj_json_read_number(r, sbx, scr, &scratchV(scri));
     }
     case '+': {
       r++;
-      return lj_json_read_number(r, sbx, &scratchV(scr));
+      return lj_json_read_number(r, sbx, scr, &scratchV(scri));
     }
     case '-': {
       r++;
-      return lj_json_read_minus(r, sbx, &scratchV(scr));
+      return lj_json_read_minus(r, sbx, scr, &scratchV(scri));
     }
     case '"': {
       r++;
       GCstr *str;
-      r = lj_json_read_string(r, sbx, &str);
-      setstrV(sbufL(sbx), &scratchV(scr), str);
+      r = lj_json_read_string(r, sbx, scr, &str);
+      setstrV(sbufL(sbx), &scratchV(scri), str);
       return r;
     }
     case '/': {
       r++;
-      r = lj_json_skip_comment_space(r, sbx);
-      return lj_json_deserialize_peek(r, sbx, scr);
+      r = lj_json_skip_comment_space(r, sbx, scr);
+      return lj_json_deserialize_peek(r, sbx, scr, scri);
     }
     case '[': {
       r++;
-      r = lj_json_read_array(r, sbx, scr);
+      r = lj_json_read_array(r, sbx, scr, scri);
       if (LJ_JSON_LIKELY(r < sbx->w && *r == ']')) {
         sbx->depth++;
         r++;
         return r;
       }
-      lj_err_jsonv(sbx, LJ_ERR_BADJSON_MISSINGTABEND, ']');
+      lj_err_jsonv(LJ_ERR_BADJSON_MISSINGTABEND, ']');
     }
     case '{': {
       r++;
-      r = lj_json_read_object(r, sbx, scr);
+      r = lj_json_read_object(r, sbx, scr, scri);
       if (LJ_JSON_LIKELY(r < sbx->w && *r == '}')) {
         sbx->depth++;
         r++;
         return r;
       }
-      lj_err_jsonv(sbx, LJ_ERR_BADJSON_MISSINGTABEND, '}');
+      lj_err_jsonv(LJ_ERR_BADJSON_MISSINGTABEND, '}');
     }
     default:
-      lj_err_json(sbx, LJ_ERR_BADJSON_INVALIDCOMM);
+      lj_err_json(LJ_ERR_BADJSON_INVALIDCOMM);
     }
   }
-  lj_err_json(sbx, LJ_ERR_BUFFER_EOB);
+  lj_err_json(LJ_ERR_BUFFER_EOB);
 }
 
 // JSON decoding END
@@ -1170,8 +1168,10 @@ static char *lj_json_deserialize_peek(char *r, SBufExt *sbx, uint32_t scr) {
 /* Get serialized object from buffer. */
 static char *lj_json_serialize_get(char *r, SBufExt *sbx, TValue *o)
 {
-  lj_json_scratch_reset();
   lua_State* L = sbufL(sbx);
+  TValueScratch scratch;
+  TValueScratch *scr = &scratch;
+  lj_json_scratch_init(L, scr);
   int gcrunning = lua_gc(L, LUA_GCISRUNNING, 0);
   if (gcrunning) {
     // We have to stop and later restart GC because lj_json_scratch is not properly anchored.
@@ -1179,16 +1179,16 @@ static char *lj_json_serialize_get(char *r, SBufExt *sbx, TValue *o)
     // the garbage collector cycle (for example when a JIT trace is being exited).
     lua_gc(L, LUA_GCSTOP, 0);
   }
-  r = lj_json_skip_white_space(r, sbx);
+  r = lj_json_skip_white_space(r, sbx, scr);
   if (LJ_JSON_LIKELY(r < sbx->w)) {
-    uint32_t scr = lj_json_scratch_pushn(L, 1);
-    r = lj_json_deserialize_peek(r, sbx, scr);
-    *o = scratchV(scr);
+    uint32_t scri = lj_json_scratch_pushn(L, scr, 1);
+    r = lj_json_deserialize_peek(r, sbx, scr, scri);
+    *o = scratchV(scri);
   } else {
     GCtab *t = lj_tab_new(L, 0, hsize2hbits(0));
     settabV(L, o, t);
   }
-  lj_json_scratch_free(sbufL(sbx));
+  lj_json_scratch_free(sbufL(sbx), scr);
   if (gcrunning) {
     lua_gc(L, LUA_GCRESTART, 0);
     lj_gc_check(L);
@@ -1235,7 +1235,7 @@ void lj_serialize_json_decode(lua_State *L, TValue *o, GCstr *str)
   sbx.depth = LJ_SERIALIZE_DEPTH;
   r = lj_json_serialize_get(sbx.r, &sbx, o);
   UNUSED(r);
-  r = lj_json_skip_white_space(r, &sbx);
+  r = lj_json_skip_white_space(r, &sbx, NULL);
   if (r != sbx.w) lj_err_caller(L, LJ_ERR_BUFFER_LEFTOV);
 }
 
